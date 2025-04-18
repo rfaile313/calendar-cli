@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""
+Adds an event to your MacOS Calendar from the command line
+Usage:
+  add_event "Event description with date/time"
+
+Examples:
+  add_event "team meeting tomorrow at 2pm"
+  add_event "dentist appointment on Friday at 10am"  
+  add_event "kids birthday may 18th" 
+  add_event "vacation next week"
+
+Requires:
+  pip3 install dateparser
+
+Author's note: I like to use this with the CLI tool:
+    icalBuddy to display the day's events from my 
+    calendar every time I open a new terminal 
+    window or tab.
+"""
+
+import sys
+import subprocess
+import os
+from datetime import datetime, timedelta
+from dateparser.search import search_dates
+import re
+import dateparser
+
+
+def parse_event(text):
+    """Parse event text and return clean title, start time, end time, and all-day flag"""
+    # Extract time and date parts for separate parsing if needed
+    time_pattern = r'(\d{1,2}(?::\d{2})?\s*(?:am|pm))'
+    time_match = re.search(time_pattern, text, re.IGNORECASE)
+    
+    # Handle specific patterns
+    tomorrow_time_pattern = r'tomorrow\s+at\s+(\d{1,2})(?::\d{2})?\s*(am|pm)'
+    tomorrow_time_match = re.search(tomorrow_time_pattern, text, re.IGNORECASE)
+    
+    # Handle "next tuesday", "next wednesday", etc.
+    next_day_pattern = r'next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(\d{1,2})(?::\d{2})?\s*(am|pm))?'
+    next_day_match = re.search(next_day_pattern, text, re.IGNORECASE)
+    
+    # Handle just "tuesday", "wednesday", etc.
+    day_pattern = r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(\d{1,2})(?::\d{2})?\s*(am|pm))?\b'
+    day_match = re.search(day_pattern, text, re.IGNORECASE)
+    
+    next_week_pattern = r'next\s+week'
+    next_week_match = re.search(next_week_pattern, text, re.IGNORECASE)
+    
+    if tomorrow_time_match:
+        hour = int(tomorrow_time_match.group(1))
+        is_pm = tomorrow_time_match.group(2).lower() == 'pm'
+        if is_pm and hour < 12:
+            hour += 12
+        tomorrow = datetime.now() + timedelta(days=1)
+        parsed_date = tomorrow.replace(
+            hour=hour, minute=0, second=0, microsecond=0
+        )
+        results = [(text, parsed_date)]
+    elif next_day_match or day_match:
+        # Handle both "next monday" and plain "monday" patterns
+        match_to_use = next_day_match if next_day_match else day_match
+        day_name = match_to_use.group(1).lower()
+        
+        # Map day names to their weekday numbers (0 = Monday, 6 = Sunday for Python's weekday())
+        day_mapping = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        target_weekday = day_mapping[day_name]
+        current_weekday = datetime.now().weekday()
+        
+        # Calculate days until the next occurrence of the specified day
+        days_until_next = (target_weekday - current_weekday) % 7
+        
+        # If it's a "next" weekday or today is the target day, ensure we go to next week
+        if next_day_match or days_until_next == 0:
+            # For "next day", always go to the next week if it's the same day
+            if days_until_next == 0:
+                days_until_next = 7  # If today is the target day, go to next week
+        
+        target_date = datetime.now() + timedelta(days=days_until_next)
+        
+        # Set time if provided
+        if match_to_use.group(2):  # Time was specified (e.g., "tuesday at 8am")
+            hour = int(match_to_use.group(2))
+            if match_to_use.group(3) and match_to_use.group(3).lower() == 'pm' and hour < 12:
+                hour += 12
+            target_date = target_date.replace(hour=hour, minute=0, second=0, microsecond=0)
+        else:
+            # Default to 9am if no time specified
+            target_date = target_date.replace(hour=9, minute=0, second=0, microsecond=0)
+            
+        results = [(text, target_date)]
+    elif next_week_match:
+        today = datetime.now()
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7  # If today is Monday, use next Monday
+        
+        next_monday = today + timedelta(days=days_until_monday)
+        next_monday = next_monday.replace(hour=9, minute=0, second=0, microsecond=0)
+        
+        results = [(text, next_monday)]
+    else:
+        # Standard parsing approach for other patterns
+        full_parse = dateparser.parse(text, settings={
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": datetime.now(),
+            "RETURN_AS_TIMEZONE_AWARE": False
+        })
+        
+        if full_parse:
+            # If we explicitly found a time part, try to reconcile it
+            if time_match and not (6 <= full_parse.hour <= 9 and "morning" in text.lower()):
+                time_str = time_match.group(0)
+                
+                # Parse just the time component
+                time_only = dateparser.parse(time_str)
+                if time_only:
+                    full_parse = full_parse.replace(
+                        hour=time_only.hour,
+                        minute=time_only.minute,
+                        second=0,
+                        microsecond=0
+                    )
+            
+            results = [(text, full_parse)]
+        else:
+            # Fall back to searching for date substrings
+            results = search_dates(text, settings={
+                "PREFER_DATES_FROM": "future",
+                "RELATIVE_BASE": datetime.now()
+            })
+
+    if not results:
+        return None, None, None, False
+
+    # We'll use the last match in case user says "11am to 1pm"
+    matched_string, dt = results[-1]
+
+    # Check if this might be an all-day event
+    is_all_day = False
+    all_day_keywords = ['birthday', 'anniversary', 'holiday', 'vacation', 'trip', 'day off', 
+                       'conference', 'meeting all day', 'all-day', 'all day', 'wedding']
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 or any(word in text.lower() for word in all_day_keywords):
+        is_all_day = True
+        start = dt
+        end = start + timedelta(days=1)
+    else:
+        start = dt
+        end = start + timedelta(hours=1)
+
+    # Clean up the event title
+    clean_title = clean_event_title(text, results)
+    
+    return clean_title, start, end, is_all_day
+
+
+def clean_event_title(text, date_matches):
+    """Clean the event title by removing date/time information"""
+    date_time_parts = [match[0] for match in date_matches]
+    
+    # Special cases for common patterns
+    common_patterns = [
+        (r'(.*?)\s+tomorrow\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)', 1),
+        (r'(.*?)\s+next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm))?', 1),
+        (r'(.*?)\s+next\s+week', 1),
+        (r'(.*?)\s+on\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)', 1),
+        (r'(.*?)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm))?', 1),
+        (r'(.*?)\s+all\s+day\s+(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)', 1)
+    ]
+    
+    # Try all special patterns first
+    for pattern, group in common_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(group).strip()
+            
+    # If no special pattern matched, use general cleaning
+    clean_title = text
+    
+    # Time-related patterns to remove
+    time_related_patterns = [
+        r'\b(?:next|this)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm))?\b',
+        r'\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+        r'\b(?:tomorrow|today|tonight|yesterday)\b',
+        r'\b(?:next|this)\s+(?:week|month|year)\b',
+        r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
+        r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b',
+        r'\b\d+(?:st|nd|rd|th)\b',
+        r'\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|noon|midnight)?',
+        r'\btomorrow\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?',
+        r'\bon\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)',
+        r'\bat\s+(?:noon|midnight|\d{1,2}(?::\d{2})?)'
+    ]
+    
+    # Remove exact matches from dateparser
+    for part in date_time_parts:
+        clean_title = clean_title.replace(part, '')
+    
+    # Apply the comprehensive patterns
+    for pattern in time_related_patterns:
+        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+    
+    # Clean up leftovers
+    clean_title = re.sub(r'\b(?:next|this)\s*$', '', clean_title, flags=re.IGNORECASE)
+    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+    clean_title = re.sub(r'[,.:;]$', '', clean_title).strip()
+    clean_title = re.sub(r'\b(?:at|on|in|for)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
+    
+    # If we've removed everything, use the original text
+    if not clean_title:
+        clean_title = text
+        
+    return clean_title
+
+
+def create_calendar_event(title, start, end, is_all_day=False):
+    """Create event in Apple Calendar using AppleScript"""
+    # Format times for AppleScript - ensuring proper time format with hours and minutes
+    start_str = start.strftime('%m/%d/%Y %I:%M:%S %p')  # Using 12-hour format with AM/PM
+    end_str = end.strftime('%m/%d/%Y %I:%M:%S %p')      # Using 12-hour format with AM/PM
+    
+    # Debug output for troubleshooting
+    print(f"DEBUG: Creating event '{title}' from {start_str} to {end_str} (All day: {is_all_day})")
+    
+    # Escape title for AppleScript
+    title_escaped = title.replace('"', '\\"')
+    
+    # Build AppleScript
+    if is_all_day:
+        apple_script = f'''
+tell application "Calendar"
+    try
+        tell calendar "Home"
+            set startDate to (current date)
+            set day of startDate to {start.day}
+            set month of startDate to {start.month}
+            set year of startDate to {start.year}
+            set hours of startDate to 0
+            set minutes of startDate to 0
+            set seconds of startDate to 0
+            
+            set endDate to (current date)
+            set day of endDate to {end.day}
+            set month of endDate to {end.month}
+            set year of endDate to {end.year}
+            set hours of endDate to 0
+            set minutes of endDate to 0
+            set seconds of endDate to 0
+            
+            make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate, allday event:true}}
+        end tell
+        return "OK"
+    on error errMsg number errNum
+        return "AppleScript Error: " & errMsg & " (" & errNum & ")"
+    end try
+end tell
+        '''
+    else:
+        apple_script = f'''
+tell application "Calendar"
+    try
+        tell calendar "Home"
+            set startDate to (current date)
+            set day of startDate to {start.day}
+            set month of startDate to {start.month}
+            set year of startDate to {start.year}
+            set hours of startDate to {start.hour}
+            set minutes of startDate to {start.minute}
+            set seconds of startDate to 0
+            
+            set endDate to (current date)
+            set day of endDate to {end.day}
+            set month of endDate to {end.month}
+            set year of endDate to {end.year}
+            set hours of endDate to {end.hour}
+            set minutes of endDate to {end.minute}
+            set seconds of endDate to 0
+            
+            make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate}}
+        end tell
+        return "OK"
+    on error errMsg number errNum
+        return "AppleScript Error: " & errMsg & " (" & errNum & ")"
+    end try
+end tell
+        '''
+
+    # Run AppleScript
+    try:
+        process = subprocess.run(
+            ["osascript", "-"],
+            input=apple_script,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
+        )
+
+        # Check results
+        script_output = process.stdout.strip() if process.stdout else ""
+        script_error = process.stderr.strip() if process.stderr else ""
+
+        if process.returncode != 0 or script_error or script_output != "OK":
+            if script_error:
+                return False, f"Error: {script_error}"
+            elif script_output.startswith("AppleScript Error:"):
+                return False, f"Error: {script_output}"
+            else:
+                return False, "Error: Unknown AppleScript error"
+        
+        return True, None
+        
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+
+def format_event_output(title, start, end, is_all_day, created=False):
+    """Format the event output"""
+    action = "Added" if created else "Would add"
+    if is_all_day:
+        return f"✅ {action} all-day event: '{title}' on {start.strftime('%A, %B %d, %Y')}"
+    else:
+        return f"✅ {action} event: '{title}' on {start.strftime('%A, %B %d at %I:%M %p')}"
+
+
+def test_mode(text):
+    """Run in test mode - parse but don't create event"""
+    title, start, end, is_all_day = parse_event(text)
+    
+    if not title or not start or not end:
+        return f"Could not parse a date/time from: '{text}'", None
+    
+    return format_event_output(title, start, end, is_all_day, False), (title, start, end, is_all_day)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: add_event \"Event description with date/time\"")
+        sys.exit(1)
+
+    # Check for test mode flag
+    if sys.argv[1] == "--test" or sys.argv[1] == "-t":
+        if len(sys.argv) < 3:
+            print("Usage for test mode: add_event --test \"Event description with date/time\"")
+            sys.exit(1)
+        text = " ".join(sys.argv[2:])
+        output, _ = test_mode(text)
+        print(output)
+        sys.exit(0)
+
+    text = " ".join(sys.argv[1:])
+    
+    # Parse the event text
+    title, start, end, is_all_day = parse_event(text)
+    
+    if not title or not start or not end:
+        print(f"Could not parse a date/time from: '{text}'")
+        sys.exit(1)
+    
+    # Create the event
+    success, error = create_calendar_event(title, start, end, is_all_day)
+    
+    if success:
+        print(format_event_output(title, start, end, is_all_day, True))
+    else:
+        print(error)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
