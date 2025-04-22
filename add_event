@@ -11,7 +11,8 @@ Examples:
   add_event "vacation next week"
 
 Requires:
-  pip3 install dateparser
+  python3
+  dateparser (pip3 install dateparser)
 
 Author's note: I like to use this with the CLI tool:
     icalBuddy to display the day's events from my 
