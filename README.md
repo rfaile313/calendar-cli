@@ -93,3 +93,4 @@ icalBuddy -sd eventsToday
 ## Other
 
 Bugs? Features? Add an [issue](https://github.com/rfaile313/calendar-cli/issues) or feel free to open a [Pull request](https://github.com/rfaile313/calendar-cli/pulls) -- patches welcome!
+
