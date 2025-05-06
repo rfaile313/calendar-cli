@@ -2,13 +2,21 @@
 """
 Adds an event to your MacOS Calendar from the command line
 Usage:
-  add_event "Event description with date/time"
+  add_event "Event description with date/time" [options]
+
+Options:
+  --reminder=TIME    Add a reminder before the event starts (e.g. 1h, 30m, 1d)
+  --test, -t         Test mode - parse but don't create event
 
 Examples:
   add_event "team meeting tomorrow at 2pm"
   add_event "dentist appointment on Friday at 10am"  
   add_event "kids birthday may 18th" 
   add_event "vacation next week"
+  add_event "important meeting next monday at 10am" --reminder=1h
+  add_event "doctor appointment on Thursday at 2pm" --reminder=1d
+  add_event "coffee chat tomorrow at 9am" --test
+  add_event "project deadline next friday" --test --reminder=2h
 
 Requires:
   python3
@@ -27,6 +35,7 @@ from datetime import datetime, timedelta
 from dateparser.search import search_dates
 import re
 import dateparser
+import argparse
 
 
 def parse_event(text):
@@ -220,14 +229,40 @@ def clean_event_title(text, date_matches):
     return clean_title
 
 
-def create_calendar_event(title, start, end, is_all_day=False):
+def parse_reminder_time(reminder_str):
+    """Parse reminder time string (e.g., '1h', '30m', '1d') into minutes"""
+    if not reminder_str:
+        return None
+        
+    # Extract the number and unit
+    match = re.match(r'^(\d+)([hmd])$', reminder_str.lower())
+    if not match:
+        print(f"Warning: Could not parse reminder time '{reminder_str}'. Format should be like 1h, 30m, or 1d.")
+        return None
+        
+    value, unit = match.groups()
+    value = int(value)
+    
+    # Convert to minutes
+    if unit == 'm':
+        return value
+    elif unit == 'h':
+        return value * 60
+    elif unit == 'd':
+        return value * 60 * 24
+    
+    return None
+
+
+def create_calendar_event(title, start, end, is_all_day=False, reminder_minutes=None):
     """Create event in Apple Calendar using AppleScript"""
     # Format times for AppleScript - ensuring proper time format with hours and minutes
     start_str = start.strftime('%m/%d/%Y %I:%M:%S %p')  # Using 12-hour format with AM/PM
     end_str = end.strftime('%m/%d/%Y %I:%M:%S %p')      # Using 12-hour format with AM/PM
     
     # Debug output for troubleshooting
-    print(f"DEBUG: Creating event '{title}' from {start_str} to {end_str} (All day: {is_all_day})")
+    reminder_debug = f" with reminder at {reminder_minutes} minutes before" if reminder_minutes else ""
+    print(f"DEBUG: Creating event '{title}' from {start_str} to {end_str} (All day: {is_all_day}){reminder_debug}")
     
     # Escape title for AppleScript
     title_escaped = title.replace('"', '\\"')
@@ -254,7 +289,10 @@ tell application "Calendar"
             set minutes of endDate to 0
             set seconds of endDate to 0
             
-            make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate, allday event:true}}
+            set newEvent to make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate, allday event:true}}
+            
+            {"-- Add reminder" if reminder_minutes else ""}
+            {f'make new display alarm at end of display alarms of newEvent with properties {{trigger interval:-{reminder_minutes}}}' if reminder_minutes else ""}
         end tell
         return "OK"
     on error errMsg number errNum
@@ -283,7 +321,10 @@ tell application "Calendar"
             set minutes of endDate to {end.minute}
             set seconds of endDate to 0
             
-            make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate}}
+            set newEvent to make new event with properties {{summary:"{title_escaped}", start date:startDate, end date:endDate}}
+            
+            {"-- Add reminder" if reminder_minutes else ""}
+            {f'make new display alarm at end of display alarms of newEvent with properties {{trigger interval:-{reminder_minutes}}}' if reminder_minutes else ""}
         end tell
         return "OK"
     on error errMsg number errNum
@@ -321,41 +362,76 @@ end tell
         return False, f"Error: {str(e)}"
 
 
-def format_event_output(title, start, end, is_all_day, created=False):
+def format_reminder_time(minutes):
+    """Format reminder time in a human-readable format"""
+    if not minutes:
+        return ""
+        
+    if minutes < 60:
+        return f"{minutes}m"
+    elif minutes % (60 * 24) == 0:
+        return f"{minutes // (60 * 24)}d"
+    elif minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    else:
+        hours = minutes // 60
+        mins = minutes % 60
+        return f"{hours}h {mins}m"
+
+
+def format_event_output(title, start, end, is_all_day, reminder_minutes=None, created=False):
     """Format the event output"""
     action = "Added" if created else "Would add"
+    reminder_text = f" with {format_reminder_time(reminder_minutes)} reminder" if reminder_minutes else ""
+    
     if is_all_day:
-        return f"✅ {action} all-day event: '{title}' on {start.strftime('%A, %B %d, %Y')}"
+        return f"✅ {action} all-day event: '{title}' on {start.strftime('%A, %B %d, %Y')}{reminder_text}"
     else:
-        return f"✅ {action} event: '{title}' on {start.strftime('%A, %B %d at %I:%M %p')}"
+        return f"✅ {action} event: '{title}' on {start.strftime('%A, %B %d at %I:%M %p')}{reminder_text}"
 
 
-def test_mode(text):
+def test_mode(text, reminder_minutes=None):
     """Run in test mode - parse but don't create event"""
     title, start, end, is_all_day = parse_event(text)
     
     if not title or not start or not end:
         return f"Could not parse a date/time from: '{text}'", None
     
-    return format_event_output(title, start, end, is_all_day, False), (title, start, end, is_all_day)
+    return format_event_output(title, start, end, is_all_day, reminder_minutes, False), (title, start, end, is_all_day)
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: add_event \"Event description with date/time\"")
+        print("Usage: add_event \"Event description with date/time\" [options]")
+        print("Options:")
+        print("  --reminder=TIME    Add a reminder before the event starts (e.g. 1h, 30m, 1d)")
+        print("  --test, -t         Test mode - parse but don't create event")
         sys.exit(1)
 
-    # Check for test mode flag
-    if sys.argv[1] == "--test" or sys.argv[1] == "-t":
-        if len(sys.argv) < 3:
-            print("Usage for test mode: add_event --test \"Event description with date/time\"")
-            sys.exit(1)
-        text = " ".join(sys.argv[2:])
-        output, _ = test_mode(text)
-        print(output)
-        sys.exit(0)
-
-    text = " ".join(sys.argv[1:])
+    # Initialize variables
+    test_mode_enabled = False
+    reminder_minutes = None
+    description_parts = []
+    
+    # Parse command line arguments
+    for arg in sys.argv[1:]:
+        if arg.startswith("--reminder="):
+            reminder_str = arg.split("=")[1]
+            reminder_minutes = parse_reminder_time(reminder_str)
+            if not reminder_minutes:
+                print(f"Invalid reminder format: {reminder_str}. Use formats like 1h, 30m, or 1d.")
+                sys.exit(1)
+        elif arg == "--test" or arg == "-t":
+            test_mode_enabled = True
+        else:
+            description_parts.append(arg)
+    
+    if not description_parts:
+        print("Missing event description")
+        sys.exit(1)
+        
+    # Join the description parts to form the full event text
+    text = " ".join(description_parts)
     
     # Parse the event text
     title, start, end, is_all_day = parse_event(text)
@@ -364,11 +440,17 @@ def main():
         print(f"Could not parse a date/time from: '{text}'")
         sys.exit(1)
     
+    # If in test mode, just show what would be created
+    if test_mode_enabled:
+        output, _ = test_mode(text, reminder_minutes)
+        print(output)
+        sys.exit(0)
+    
     # Create the event
-    success, error = create_calendar_event(title, start, end, is_all_day)
+    success, error = create_calendar_event(title, start, end, is_all_day, reminder_minutes)
     
     if success:
-        print(format_event_output(title, start, end, is_all_day, True))
+        print(format_event_output(title, start, end, is_all_day, reminder_minutes, True))
     else:
         print(error)
         sys.exit(1)
