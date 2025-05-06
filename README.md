@@ -49,36 +49,42 @@ add_event "Your event description with date/time"
 
 ### Options
 
-You can add optional flags after the quoted event to do different stuff:
+You can add optional flags after the quoted event description:
 
 - `--reminder=TIME`: Add a reminder before the event starts (e.g. 1h, 30m, 1d)
 - `--test`, `-t`: Test mode - parse but don't create event
+- `--debug`: Show debug information during processing
 
 ### Examples
+
+Basic usage with different date formats:
 
 ```bash
 add_event "team meeting tomorrow at 2pm"
 add_event "dentist appointment on Friday at 10am"
-add_event "kids birthday may 18th"
+add_event "conference call on May 15th at 10am"
 add_event "vacation next week"
 ```
 
-### Reminders
-
-You can add events _with_ reminders:
+With reminders:
 
 ```bash
 add_event "important meeting next monday at 10am" --reminder=1h
 add_event "doctor appointment on Thursday at 2pm" --reminder=1d
 ```
 
-### Test Mode
-
-To preview how an event will be parsed without adding it to your calendar:
+Test mode (preview without creating):
 
 ```bash
 add_event "team meeting tomorrow at 2pm" --test
 add_event "project deadline next friday" --test --reminder=2h
+```
+
+Debug mode (show parsing details):
+
+```bash
+add_event "conference call on May 15th at 10am" --debug
+add_event "upcoming workshop next tuesday at 3pm" --test --debug
 ```
 
 ## Integration with icalBuddy
