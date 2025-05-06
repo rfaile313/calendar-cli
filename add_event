@@ -7,16 +7,15 @@ Usage:
 Options:
   --reminder=TIME    Add a reminder before the event starts (e.g. 1h, 30m, 1d)
   --test, -t         Test mode - parse but don't create event
+  --debug            Show debug information during processing
 
 Examples:
   add_event "team meeting tomorrow at 2pm"
-  add_event "dentist appointment on Friday at 10am"  
-  add_event "kids birthday may 18th" 
+  add_event "dentist appointment on Friday at 10am"
+  add_event "conference call on May 15th at 10am" --reminder=1h
   add_event "vacation next week"
-  add_event "important meeting next monday at 10am" --reminder=1h
-  add_event "doctor appointment on Thursday at 2pm" --reminder=1d
   add_event "coffee chat tomorrow at 9am" --test
-  add_event "project deadline next friday" --test --reminder=2h
+  add_event "project deadline next friday" --debug
 
 Requires:
   python3
@@ -38,7 +37,7 @@ import dateparser
 import argparse
 
 
-def parse_event(text):
+def parse_event(text, debug_print=lambda *args, **kwargs: None):
     """Parse event text and return clean title, start time, end time, and all-day flag"""
     # Extract time and date parts for separate parsing if needed
     time_pattern = r'(\d{1,2}(?::\d{2})?\s*(?:am|pm))'
@@ -56,10 +55,77 @@ def parse_event(text):
     day_pattern = r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(\d{1,2})(?::\d{2})?\s*(am|pm))?\b'
     day_match = re.search(day_pattern, text, re.IGNORECASE)
     
+    # Handle "on may 15th at 10am"
+    date_time_pattern = r'on\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d+(?:st|nd|rd|th)?\s+at\s+(\d{1,2})(?::\d{2})?\s*(am|pm)'
+    date_time_match = re.search(date_time_pattern, text, re.IGNORECASE)
+    
     next_week_pattern = r'next\s+week'
     next_week_match = re.search(next_week_pattern, text, re.IGNORECASE)
     
-    if tomorrow_time_match:
+    if date_time_match:
+        # Handle explicit date with time, e.g., "on may 15th at 10am"
+        # Extract date and time parts directly from regex matches
+        
+        # Extract hour and minute
+        hour = int(date_time_match.group(1))
+        minute = 0
+        is_pm = date_time_match.group(2).lower() == 'pm'
+        if is_pm and hour < 12:
+            hour += 12
+            
+        # Since we're dealing with a pattern like "on may 15th at 10am",
+        # directly extract the month and day
+        month_pattern = r'on\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        month_match = re.search(month_pattern, text, re.IGNORECASE)
+        
+        day_pattern = r'(\d+)(?:st|nd|rd|th)?\s+at'
+        day_match = re.search(day_pattern, text, re.IGNORECASE)
+        
+        if month_match and day_match:
+            month_name = month_match.group(1).lower()
+            day = int(day_match.group(1))
+            
+            # Map month names to numbers
+            month_mapping = {
+                'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+                'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+                'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
+                'nov': 11, 'november': 11, 'dec': 12, 'december': 12
+            }
+            
+            # Find closest match for month name
+            month = 1  # Default
+            for key, value in month_mapping.items():
+                if month_name.startswith(key) or key.startswith(month_name):
+                    month = value
+                    break
+            
+            # Get current year
+            year = datetime.now().year
+            
+            # Create datetime object
+            try:
+                dt_obj = datetime(year, month, day, hour, minute, 0, 0)
+                
+                # If date is in the past, try next year
+                if dt_obj < datetime.now():
+                    dt_obj = datetime(year + 1, month, day, hour, minute, 0, 0)
+                    
+                results = [(text, dt_obj)]
+            except ValueError:
+                # Handle invalid dates (like February 30)
+                # Fall back to dateparser
+                results = search_dates(text, settings={
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.now()
+                })
+        else:
+            # Couldn't extract month/day directly, use dateparser
+            results = search_dates(text, settings={
+                "PREFER_DATES_FROM": "future",
+                "RELATIVE_BASE": datetime.now()
+            })
+    elif tomorrow_time_match:
         hour = int(tomorrow_time_match.group(1))
         is_pm = tomorrow_time_match.group(2).lower() == 'pm'
         if is_pm and hour < 12:
@@ -115,6 +181,61 @@ def parse_event(text):
         next_monday = next_monday.replace(hour=9, minute=0, second=0, microsecond=0)
         
         results = [(text, next_monday)]
+    elif time_match:
+        # Handle case where there's a time match but no explicit date+time match
+        time_str = time_match.group(0)
+        time_only = dateparser.parse(time_str)
+        
+        # Parse the full date
+        full_parse = dateparser.parse(text, settings={
+            "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": datetime.now(),
+            "RETURN_AS_TIMEZONE_AWARE": False
+        })
+        
+        if full_parse:
+            # Check if the year is unreasonably far in the future
+            current_year = datetime.now().year
+            if full_parse.year > current_year + 10:  # If more than 10 years in future
+                full_parse = full_parse.replace(year=current_year)  # Use current year
+            
+            # Apply the time
+            if time_only:
+                full_parse = full_parse.replace(
+                    hour=time_only.hour,
+                    minute=time_only.minute,
+                    second=0,
+                    microsecond=0
+                )
+            
+            results = [(text, full_parse)]
+        else:
+            # Fallback if dateparser couldn't handle it
+            results = search_dates(text, settings={
+                "PREFER_DATES_FROM": "future",
+                "RELATIVE_BASE": datetime.now()
+            })
+            
+            # If we found dates and have an explicit time match, apply the time
+            if results and time_match:
+                matched_string, dt = results[-1]
+                time_str = time_match.group(0)
+                time_only = dateparser.parse(time_str)
+                
+                if time_only:
+                    # Check if the year is unreasonably far in the future
+                    current_year = datetime.now().year
+                    if dt.year > current_year + 10:  # If more than 10 years in future
+                        dt = dt.replace(year=current_year)  # Use current year
+                        
+                    # Apply the time
+                    dt = dt.replace(
+                        hour=time_only.hour,
+                        minute=time_only.minute,
+                        second=0,
+                        microsecond=0
+                    )
+                    results[-1] = (matched_string, dt)
     else:
         # Standard parsing approach for other patterns
         full_parse = dateparser.parse(text, settings={
@@ -124,8 +245,14 @@ def parse_event(text):
         })
         
         if full_parse:
-            # If we explicitly found a time part, try to reconcile it
-            if time_match and not (6 <= full_parse.hour <= 9 and "morning" in text.lower()):
+            # Check if the year is unreasonably far in the future (a common dateparser issue)
+            current_year = datetime.now().year
+            if full_parse.year > current_year + 10:  # If more than 10 years in future
+                full_parse = full_parse.replace(year=current_year)  # Use current year
+            
+            # If we explicitly found a time part, always apply it
+            # This ensures we respect explicitly specified times
+            if time_match:
                 time_str = time_match.group(0)
                 
                 # Parse just the time component
@@ -145,18 +272,52 @@ def parse_event(text):
                 "PREFER_DATES_FROM": "future",
                 "RELATIVE_BASE": datetime.now()
             })
+            
+            # If we found dates and have an explicit time match, apply the time
+            if results and time_match:
+                matched_string, dt = results[-1]
+                time_str = time_match.group(0)
+                time_only = dateparser.parse(time_str)
+                
+                if time_only:
+                    # Check if the year is unreasonably far in the future
+                    current_year = datetime.now().year
+                    if dt.year > current_year + 10:  # If more than 10 years in future
+                        dt = dt.replace(year=current_year)  # Use current year
+                        
+                    # Apply the time
+                    dt = dt.replace(
+                        hour=time_only.hour,
+                        minute=time_only.minute,
+                        second=0,
+                        microsecond=0
+                    )
+                    results[-1] = (matched_string, dt)
 
     if not results:
         return None, None, None, False
-
+        
     # We'll use the last match in case user says "11am to 1pm"
     matched_string, dt = results[-1]
+    
+    # Debug for troubleshooting date/time parsing
+    debug_print(f"DEBUG: Parsed datetime: {dt} from '{text}'", file=sys.stderr)
 
     # Check if this might be an all-day event
     is_all_day = False
     all_day_keywords = ['birthday', 'anniversary', 'holiday', 'vacation', 'trip', 'day off', 
-                       'conference', 'meeting all day', 'all-day', 'all day', 'wedding']
-    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 or any(word in text.lower() for word in all_day_keywords):
+                       'meeting all day', 'all-day', 'all day', 'wedding']
+    
+    # Only consider it an all-day event if:
+    # 1. Time is midnight (and was not explicitly specified by the user)
+    # 2. OR if specific all-day keywords are present AND no time was specified
+    has_explicit_time = bool(time_match or tomorrow_time_match or 
+                           (next_day_match and next_day_match.group(2)) or 
+                           (day_match and day_match.group(2)) or
+                           date_time_match)
+    
+    if ((dt.hour == 0 and dt.minute == 0 and dt.second == 0 and not has_explicit_time) or 
+        (any(word in text.lower() for word in all_day_keywords) and not has_explicit_time)):
         is_all_day = True
         start = dt
         end = start + timedelta(days=1)
@@ -173,6 +334,14 @@ def parse_event(text):
 def clean_event_title(text, date_matches):
     """Clean the event title by removing date/time information"""
     date_time_parts = [match[0] for match in date_matches]
+    
+    # Special pattern for "on May 15th at 10am" format
+    date_on_month_pattern = r'(.*?)\s+on\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d+(?:st|nd|rd|th)?\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)'
+    date_on_month_match = re.search(date_on_month_pattern, text, re.IGNORECASE)
+    if date_on_month_match:
+        clean_title = date_on_month_match.group(1).strip()
+        if clean_title:
+            return clean_title
     
     # Special cases for common patterns
     common_patterns = [
@@ -205,6 +374,7 @@ def clean_event_title(text, date_matches):
         r'\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|noon|midnight)?',
         r'\btomorrow\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?',
         r'\bon\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)',
+        r'\bon\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d+(?:st|nd|rd|th)?\b',
         r'\bat\s+(?:noon|midnight|\d{1,2}(?::\d{2})?)'
     ]
     
@@ -254,7 +424,7 @@ def parse_reminder_time(reminder_str):
     return None
 
 
-def create_calendar_event(title, start, end, is_all_day=False, reminder_minutes=None):
+def create_calendar_event(title, start, end, is_all_day=False, reminder_minutes=None, debug_print=lambda *args, **kwargs: None):
     """Create event in Apple Calendar using AppleScript"""
     # Format times for AppleScript - ensuring proper time format with hours and minutes
     start_str = start.strftime('%m/%d/%Y %I:%M:%S %p')  # Using 12-hour format with AM/PM
@@ -262,7 +432,7 @@ def create_calendar_event(title, start, end, is_all_day=False, reminder_minutes=
     
     # Debug output for troubleshooting
     reminder_debug = f" with reminder at {reminder_minutes} minutes before" if reminder_minutes else ""
-    print(f"DEBUG: Creating event '{title}' from {start_str} to {end_str} (All day: {is_all_day}){reminder_debug}")
+    debug_print(f"DEBUG: Creating event '{title}' from {start_str} to {end_str} (All day: {is_all_day}){reminder_debug}")
     
     # Escape title for AppleScript
     title_escaped = title.replace('"', '\\"')
@@ -390,12 +560,15 @@ def format_event_output(title, start, end, is_all_day, reminder_minutes=None, cr
         return f"✅ {action} event: '{title}' on {start.strftime('%A, %B %d at %I:%M %p')}{reminder_text}"
 
 
-def test_mode(text, reminder_minutes=None):
+def test_mode(text, reminder_minutes=None, debug_print=lambda *args, **kwargs: None):
     """Run in test mode - parse but don't create event"""
-    title, start, end, is_all_day = parse_event(text)
+    title, start, end, is_all_day = parse_event(text, debug_print)
     
     if not title or not start or not end:
         return f"Could not parse a date/time from: '{text}'", None
+    
+    # Debug output for event values
+    debug_print(f"DEBUG FINAL VALUES: title='{title}', start={start}, end={end}, is_all_day={is_all_day}", file=sys.stderr)
     
     return format_event_output(title, start, end, is_all_day, reminder_minutes, False), (title, start, end, is_all_day)
 
@@ -406,12 +579,20 @@ def main():
         print("Options:")
         print("  --reminder=TIME    Add a reminder before the event starts (e.g. 1h, 30m, 1d)")
         print("  --test, -t         Test mode - parse but don't create event")
+        print("  --debug            Show debug information during processing")
         sys.exit(1)
 
     # Initialize variables
     test_mode_enabled = False
+    debug_mode = False
     reminder_minutes = None
     description_parts = []
+    
+    # Set up debug print function
+    global debug_print
+    def debug_print(*args, **kwargs):
+        if debug_mode:
+            print(*args, **kwargs)
     
     # Parse command line arguments
     for arg in sys.argv[1:]:
@@ -423,6 +604,8 @@ def main():
                 sys.exit(1)
         elif arg == "--test" or arg == "-t":
             test_mode_enabled = True
+        elif arg == "--debug":
+            debug_mode = True
         else:
             description_parts.append(arg)
     
@@ -434,7 +617,7 @@ def main():
     text = " ".join(description_parts)
     
     # Parse the event text
-    title, start, end, is_all_day = parse_event(text)
+    title, start, end, is_all_day = parse_event(text, debug_print)
     
     if not title or not start or not end:
         print(f"Could not parse a date/time from: '{text}'")
@@ -442,12 +625,12 @@ def main():
     
     # If in test mode, just show what would be created
     if test_mode_enabled:
-        output, _ = test_mode(text, reminder_minutes)
+        output, _ = test_mode(text, reminder_minutes, debug_print)
         print(output)
         sys.exit(0)
     
     # Create the event
-    success, error = create_calendar_event(title, start, end, is_all_day, reminder_minutes)
+    success, error = create_calendar_event(title, start, end, is_all_day, reminder_minutes, debug_print)
     
     if success:
         print(format_event_output(title, start, end, is_all_day, reminder_minutes, True))
