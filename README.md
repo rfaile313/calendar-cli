@@ -11,6 +11,7 @@ Calendar CLI allows you to quickly add events to your macOS Calendar directly fr
 - Natural language date/time parsing
 - Support for recurring events
 - Support for all-day events
+- Event reminders (1h, 30m, 1d, etc.)
 - Intelligent title extraction
 - Test mode to preview event details
 
@@ -43,8 +44,13 @@ I personally prefer to symlink `add_event` to `/usr/local/bin` which is already 
 ## Usage
 
 ```bash
-add_event "Your event description with date/time"
+add_event "Your event description with date/time" [options]
 ```
+
+### Options
+
+- `--reminder=TIME`: Add a reminder before the event starts (e.g. 1h, 30m, 1d)
+- `--test`, `-t`: Test mode - parse but don't create event
 
 ### Examples
 
@@ -53,6 +59,8 @@ add_event "team meeting tomorrow at 2pm"
 add_event "dentist appointment on Friday at 10am"
 add_event "kids birthday may 18th"
 add_event "vacation next week"
+add_event "important meeting next monday at 10am" --reminder=1h
+add_event "doctor appointment on Thursday at 2pm" --reminder=1d
 ```
 
 ### Test Mode
@@ -60,7 +68,8 @@ add_event "vacation next week"
 To preview how an event will be parsed without adding it to your calendar:
 
 ```bash
-add_event --test "team meeting tomorrow at 2pm"
+add_event "team meeting tomorrow at 2pm" --test
+add_event "project deadline next friday" --test --reminder=2h
 ```
 
 ## Integration with icalBuddy
