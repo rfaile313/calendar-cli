@@ -44,10 +44,12 @@ I personally prefer to symlink `add_event` to `/usr/local/bin` which is already 
 ## Usage
 
 ```bash
-add_event "Your event description with date/time" [options]
+add_event "Your event description with date/time"
 ```
 
 ### Options
+
+You can add optional flags after the quoted event to do different stuff:
 
 - `--reminder=TIME`: Add a reminder before the event starts (e.g. 1h, 30m, 1d)
 - `--test`, `-t`: Test mode - parse but don't create event
@@ -59,6 +61,13 @@ add_event "team meeting tomorrow at 2pm"
 add_event "dentist appointment on Friday at 10am"
 add_event "kids birthday may 18th"
 add_event "vacation next week"
+```
+
+### Reminders
+
+You can add events _with_ reminders:
+
+```bash
 add_event "important meeting next monday at 10am" --reminder=1h
 add_event "doctor appointment on Thursday at 2pm" --reminder=1d
 ```
